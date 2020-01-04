@@ -96,40 +96,6 @@ test(async function responseWrite(): Promise<void> {
   }
 });
 
-test(async function requestContentLength(): Promise<void> {
-  // Has content length
-  {
-    const req = new ServerRequest();
-    req.headers = new Headers();
-    req.headers.set("content-length", "5");
-    const buf = new Buffer(enc.encode("Hello"));
-    req.r = new BufReader(buf);
-    assertEquals(req.contentLength, 5);
-  }
-  // No content length
-  {
-    const shortText = "Hello";
-    const req = new ServerRequest();
-    req.headers = new Headers();
-    req.headers.set("transfer-encoding", "chunked");
-    let chunksData = "";
-    let chunkOffset = 0;
-    const maxChunkSize = 70;
-    while (chunkOffset < shortText.length) {
-      const chunkSize = Math.min(maxChunkSize, shortText.length - chunkOffset);
-      chunksData += `${chunkSize.toString(16)}\r\n${shortText.substr(
-        chunkOffset,
-        chunkSize
-      )}\r\n`;
-      chunkOffset += chunkSize;
-    }
-    chunksData += "0\r\n\r\n";
-    const buf = new Buffer(enc.encode(chunksData));
-    req.r = new BufReader(buf);
-    assertEquals(req.contentLength, null);
-  }
-});
-
 test(async function requestBodyWithContentLength(): Promise<void> {
   {
     const req = new ServerRequest();
@@ -137,7 +103,7 @@ test(async function requestBodyWithContentLength(): Promise<void> {
     req.headers.set("content-length", "5");
     const buf = new Buffer(enc.encode("Hello"));
     req.r = new BufReader(buf);
-    const body = dec.decode(await Deno.readAll(req.body));
+    const body = dec.decode(await req.body());
     assertEquals(body, "Hello");
   }
 
@@ -149,7 +115,7 @@ test(async function requestBodyWithContentLength(): Promise<void> {
     req.headers.set("Content-Length", "5000");
     const buf = new Buffer(enc.encode(longText));
     req.r = new BufReader(buf);
-    const body = dec.decode(await Deno.readAll(req.body));
+    const body = dec.decode(await req.body());
     assertEquals(body, longText);
   }
 });
@@ -174,7 +140,7 @@ test(async function requestBodyWithTransferEncoding(): Promise<void> {
     chunksData += "0\r\n\r\n";
     const buf = new Buffer(enc.encode(chunksData));
     req.r = new BufReader(buf);
-    const body = dec.decode(await Deno.readAll(req.body));
+    const body = dec.decode(await req.body());
     assertEquals(body, shortText);
   }
 
@@ -198,12 +164,12 @@ test(async function requestBodyWithTransferEncoding(): Promise<void> {
     chunksData += "0\r\n\r\n";
     const buf = new Buffer(enc.encode(chunksData));
     req.r = new BufReader(buf);
-    const body = dec.decode(await Deno.readAll(req.body));
+    const body = dec.decode(await req.body());
     assertEquals(body, longText);
   }
 });
 
-test(async function requestBodyReaderWithContentLength(): Promise<void> {
+test(async function requestBodyStreamWithContentLength(): Promise<void> {
   {
     const shortText = "Hello";
     const req = new ServerRequest();
@@ -211,20 +177,16 @@ test(async function requestBodyReaderWithContentLength(): Promise<void> {
     req.headers.set("content-length", "" + shortText.length);
     const buf = new Buffer(enc.encode(shortText));
     req.r = new BufReader(buf);
-    const readBuf = new Uint8Array(6);
+    const it = await req.bodyStream();
     let offset = 0;
-    while (offset < shortText.length) {
-      const nread = await req.body.read(readBuf);
-      assertNotEOF(nread);
-      const s = dec.decode(readBuf.subarray(0, nread as number));
-      assertEquals(shortText.substr(offset, nread as number), s);
-      offset += nread as number;
+    for await (const chunk of it) {
+      const s = dec.decode(chunk);
+      assertEquals(shortText.substr(offset, s.length), s);
+      offset += s.length;
     }
-    const nread = await req.body.read(readBuf);
-    assertEquals(nread, Deno.EOF);
   }
 
-  // Larger than given buf
+  // Larger than internal buf
   {
     const longText = "1234\n".repeat(1000);
     const req = new ServerRequest();
@@ -232,21 +194,17 @@ test(async function requestBodyReaderWithContentLength(): Promise<void> {
     req.headers.set("Content-Length", "5000");
     const buf = new Buffer(enc.encode(longText));
     req.r = new BufReader(buf);
-    const readBuf = new Uint8Array(1000);
+    const it = await req.bodyStream();
     let offset = 0;
-    while (offset < longText.length) {
-      const nread = await req.body.read(readBuf);
-      assertNotEOF(nread);
-      const s = dec.decode(readBuf.subarray(0, nread as number));
-      assertEquals(longText.substr(offset, nread as number), s);
-      offset += nread as number;
+    for await (const chunk of it) {
+      const s = dec.decode(chunk);
+      assertEquals(longText.substr(offset, s.length), s);
+      offset += s.length;
     }
-    const nread = await req.body.read(readBuf);
-    assertEquals(nread, Deno.EOF);
   }
 });
 
-test(async function requestBodyReaderWithTransferEncoding(): Promise<void> {
+test(async function requestBodyStreamWithTransferEncoding(): Promise<void> {
   {
     const shortText = "Hello";
     const req = new ServerRequest();
@@ -266,17 +224,13 @@ test(async function requestBodyReaderWithTransferEncoding(): Promise<void> {
     chunksData += "0\r\n\r\n";
     const buf = new Buffer(enc.encode(chunksData));
     req.r = new BufReader(buf);
-    const readBuf = new Uint8Array(6);
+    const it = await req.bodyStream();
     let offset = 0;
-    while (offset < shortText.length) {
-      const nread = await req.body.read(readBuf);
-      assertNotEOF(nread);
-      const s = dec.decode(readBuf.subarray(0, nread as number));
-      assertEquals(shortText.substr(offset, nread as number), s);
-      offset += nread as number;
+    for await (const chunk of it) {
+      const s = dec.decode(chunk);
+      assertEquals(shortText.substr(offset, s.length), s);
+      offset += s.length;
     }
-    const nread = await req.body.read(readBuf);
-    assertEquals(nread, Deno.EOF);
   }
 
   // Larger than internal buf
@@ -299,17 +253,13 @@ test(async function requestBodyReaderWithTransferEncoding(): Promise<void> {
     chunksData += "0\r\n\r\n";
     const buf = new Buffer(enc.encode(chunksData));
     req.r = new BufReader(buf);
-    const readBuf = new Uint8Array(1000);
+    const it = await req.bodyStream();
     let offset = 0;
-    while (offset < longText.length) {
-      const nread = await req.body.read(readBuf);
-      assertNotEOF(nread);
-      const s = dec.decode(readBuf.subarray(0, nread as number));
-      assertEquals(longText.substr(offset, nread as number), s);
-      offset += nread as number;
+    for await (const chunk of it) {
+      const s = dec.decode(chunk);
+      assertEquals(longText.substr(offset, s.length), s);
+      offset += s.length;
     }
-    const nread = await req.body.read(readBuf);
-    assertEquals(nread, Deno.EOF);
   }
 });
 
@@ -660,7 +610,7 @@ if (Deno.build.os !== "win") {
         for await (const req of server) {
           connRid = req.conn.rid;
           reqCount++;
-          await Deno.readAll(req.body);
+          await req.body();
           await connClosedPromise;
           try {
             await req.respond({
